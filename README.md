@@ -134,7 +134,7 @@ Run without arguments → drops into REPL with commands:
 ## Example Usage in Interactive
 ```text
 root@debian:~# python3 transacs.py
- [ TRANSACS 1.0.0.0] 
+ [ TRANSACS 1.0.0.0 ] 
 Advanced Wiegand Card Utility - Interactive Mode
 Supported formats: 26, 34, 37, 33, 35, 36, 40, 42, 44, 48, 56, 64
 Vendors: hid, indala, awid, kantech, lenel, generic
