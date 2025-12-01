@@ -676,7 +676,7 @@ def main():
     
     # Interactive mode
     else:
-        print(" [ TRANSACS 1.0.0.0] ")
+        print(" [ TRANSACS 1.0.0.0 ] ")
         print("Advanced Wiegand Card Utility - Interactive Mode")
         print("Supported formats:", ", ".join(map(str, transformer.format_manager.get_supported_formats())))
         print("Vendors:", ", ".join([v.value for v in AccessControlVendor]))
