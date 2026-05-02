@@ -144,10 +144,32 @@ class WiegandFormatManager:
 
 class WiegandTransformer:
     """Main Wiegand card transformer class"""
+
+    PERCO_DECIMAL_BITS = 32
+    PERCO_PREFIX_BITS = 8
+    PERCO_MIN_VALUE = 1 << PERCO_DECIMAL_BITS
+    PERCO_MAX_VALUE = (1 << (PERCO_PREFIX_BITS + PERCO_DECIMAL_BITS)) - 1
     
     def __init__(self):
         self.format_manager = WiegandFormatManager()
         self.seen_cards: Set[str] = set()
+
+    def try_parse_perco(self, input_str: str) -> Optional[Tuple[int, int, int]]:
+        """Parse PERCo decimal input as (full_value, prefix, low_decimal)."""
+        cleaned = input_str.strip().lower()
+        if cleaned.startswith("perco:"):
+            cleaned = cleaned.split(":", 1)[1].strip()
+
+        if not cleaned.isdigit():
+            return None
+
+        value = int(cleaned)
+        if not (self.PERCO_MIN_VALUE <= value <= self.PERCO_MAX_VALUE):
+            return None
+
+        prefix = value >> self.PERCO_DECIMAL_BITS
+        decimal_value = value & 0xFFFFFFFF
+        return value, prefix, decimal_value
     
     def calculate_parity(self, bits: str, start: int, end: int, parity_type: ParityType) -> str:
         """Calculate parity bit for given range"""
@@ -222,6 +244,12 @@ class WiegandTransformer:
             # Decimal input
             if '/' not in input_str:
                 decimal_value = int(input_str)
+
+                # PERCo input: high 8 bits are prefix, low 32 bits are decimal payload
+                perco = self.try_parse_perco(input_str)
+                if perco:
+                    _, _, decimal_value = perco
+
                 # Try with full format first (with parity), then data only
                 for target_len in [bit_format, data_len]:
                     data_bits = bin(decimal_value)[2:].zfill(target_len)
@@ -571,6 +599,14 @@ class WiegandTransformer:
         
         return "\n".join(lines)
 
+    def detect_input_hint(self, input_str: str) -> Optional[str]:
+        """Detect special input encodings for user-facing output."""
+        perco = self.try_parse_perco(input_str)
+        if perco:
+            perco_value, prefix, decimal_value = perco
+            return f"[INFO] Input detected as PERCo: value={perco_value}, prefix=0x{prefix:02X} ({prefix}), decimal32={decimal_value}"
+        return None
+
 def main():
     """Main CLI function"""
     transformer = WiegandTransformer()
@@ -595,6 +631,9 @@ def main():
     
     # Auto-detect format
     if args.detect and args.input:
+        input_hint = transformer.detect_input_hint(args.input)
+        if input_hint:
+            print(input_hint)
         print("Auto-detecting Format...")
         results = transformer.auto_detect_format(args.input)
         
@@ -652,6 +691,10 @@ def main():
     
     # Normal transformation
     elif args.input:
+        input_hint = transformer.detect_input_hint(args.input)
+        if input_hint:
+            print(input_hint)
+
         if args.format:
             # Specific format
             facility, card, data_bits = transformer.parse_input(args.input, args.format)
