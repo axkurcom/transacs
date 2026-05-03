@@ -54,12 +54,15 @@ class CardValidationResult:
 class TransformationResult:
     success: bool
     input_str: str
+    source_format: Optional[str] = None
     format_used: Optional[int] = None
     facility: Optional[int] = None
     card: Optional[int] = None
     decimal_value: Optional[int] = None
     hex_value: Optional[str] = None
     wiegand_bits: Optional[str] = None
+    perco_value: Optional[int] = None
+    perco_prefix: Optional[int] = None
     parity_valid: bool = False
     validation_result: Optional[CardValidationResult] = None
     error_message: Optional[str] = None
@@ -154,22 +157,47 @@ class WiegandTransformer:
         self.format_manager = WiegandFormatManager()
         self.seen_cards: Set[str] = set()
 
-    def try_parse_perco(self, input_str: str) -> Optional[Tuple[int, int, int]]:
+    def try_parse_perco(self, input_str: str, allow_bare: bool = True) -> Optional[Tuple[int, int, int]]:
         """Parse PERCo decimal input as (full_value, prefix, low_decimal)."""
         cleaned = input_str.strip().lower()
+        tagged = cleaned.startswith("perco:")
         if cleaned.startswith("perco:"):
             cleaned = cleaned.split(":", 1)[1].strip()
+        elif not allow_bare:
+            return None
 
         if not cleaned.isdigit():
             return None
 
         value = int(cleaned)
-        if not (self.PERCO_MIN_VALUE <= value <= self.PERCO_MAX_VALUE):
+        min_value = 0 if tagged else self.PERCO_MIN_VALUE
+        if not (min_value <= value <= self.PERCO_MAX_VALUE):
             return None
 
         prefix = value >> self.PERCO_DECIMAL_BITS
         decimal_value = value & 0xFFFFFFFF
         return value, prefix, decimal_value
+
+    def _parse_decimal_value(self, decimal_value: int, bit_format: int, config: WiegandConfig) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+        fac_len, card_len = config.fac_len, config.card_len
+        data_len = fac_len + card_len
+
+        # Try with full format first (with parity), then data only
+        for target_len in [bit_format, data_len]:
+            data_bits = bin(decimal_value)[2:].zfill(target_len)
+            if len(data_bits) == target_len:
+                if target_len == bit_format and config.parity_config:
+                    # Extract data bits from full Wiegand
+                    start_e, end_e, start_o, end_o = config.parity_config
+                    even_data_length = end_e - start_e
+                    data_bits = data_bits[1:1+even_data_length] + data_bits[1+even_data_length+1:-1]
+
+                if len(data_bits) == data_len:
+                    facility = int(data_bits[:fac_len], 2)
+                    card = int(data_bits[fac_len:], 2)
+                    return facility, card, data_bits
+
+        return None, None, None
     
     def calculate_parity(self, bits: str, start: int, end: int, parity_type: ParityType) -> str:
         """Calculate parity bit for given range"""
@@ -185,7 +213,7 @@ class WiegandTransformer:
         else:
             return '0'
     
-    def parse_input(self, input_str: str, bit_format: int) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+    def parse_input(self, input_str: str, bit_format: int, allow_bare_perco_fallback: bool = True) -> Tuple[Optional[int], Optional[int], Optional[str]]:
         """Parse input string into facility, card and bit representation"""
         config = self.format_manager.get_format(bit_format)
         if not config:
@@ -243,28 +271,23 @@ class WiegandTransformer:
             
             # Decimal input
             if '/' not in input_str:
-                decimal_value = int(input_str)
+                explicit_perco = self.try_parse_perco(input_str, allow_bare=False)
+                if explicit_perco:
+                    _, _, decimal_value = explicit_perco
+                    return self._parse_decimal_value(decimal_value, bit_format, config)
 
-                # PERCo input: high 8 bits are prefix, low 32 bits are decimal payload
-                perco = self.try_parse_perco(input_str)
+                decimal_value = int(input_str)
+                facility, card, data_bits = self._parse_decimal_value(decimal_value, bit_format, config)
+                if data_bits is not None:
+                    return facility, card, data_bits
+
+                # Bare PERCo is a fallback for short target formats where the full
+                # decimal cannot be represented directly.
+                perco = self.try_parse_perco(input_str) if allow_bare_perco_fallback else None
                 if perco:
                     _, _, decimal_value = perco
+                    return self._parse_decimal_value(decimal_value, bit_format, config)
 
-                # Try with full format first (with parity), then data only
-                for target_len in [bit_format, data_len]:
-                    data_bits = bin(decimal_value)[2:].zfill(target_len)
-                    if len(data_bits) == target_len:
-                        if target_len == bit_format and config.parity_config:
-                            # Extract data bits from full Wiegand
-                            start_e, end_e, start_o, end_o = config.parity_config
-                            even_data_length = end_e - start_e
-                            odd_data_length = end_o - start_o
-                            data_bits = data_bits[1:1+even_data_length] + data_bits[1+even_data_length+1:-1]
-                        
-                        if len(data_bits) == data_len:
-                            facility = int(data_bits[:fac_len], 2)
-                            card = int(data_bits[fac_len:], 2)
-                            return facility, card, data_bits
                 return None, None, None
             
             # Facility/Card input
@@ -515,14 +538,32 @@ class WiegandTransformer:
     def auto_detect_format(self, input_str: str) -> List[TransformationResult]:
         """Auto-detect format from input"""
         results = []
+        explicit_perco = self.try_parse_perco(input_str, allow_bare=False)
+        bare_perco = self.try_parse_perco(input_str)
         
         for bit_format in self.format_manager.get_supported_formats():
             # Direct transformation
-            facility, card, data_bits = self.parse_input(input_str, bit_format)
+            facility, card, data_bits = self.parse_input(input_str, bit_format, allow_bare_perco_fallback=False)
             if data_bits is not None:
                 result = self.transform_to_decimal(facility, card, data_bits, bit_format)
                 if result.success:
+                    if explicit_perco:
+                        result.source_format = "PERCo"
+                        result.perco_value, result.perco_prefix, _ = explicit_perco
                     results.append(result)
+
+            # Bare PERCo is ambiguous with long decimal Wiegand values, so keep it
+            # as a separate auto-detect candidate instead of changing decimal parsing.
+            if bare_perco and not explicit_perco:
+                perco_value, perco_prefix, decimal_value = bare_perco
+                facility, card, data_bits = self._parse_decimal_value(decimal_value, bit_format, self.format_manager.get_format(bit_format))
+                if data_bits is not None:
+                    result = self.transform_to_decimal(facility, card, data_bits, bit_format)
+                    if result.success:
+                        result.source_format = "PERCo"
+                        result.perco_value = perco_value
+                        result.perco_prefix = perco_prefix
+                        results.append(result)
             
             # Reverse transformation (for binary/hex inputs)
             if input_str.startswith('0x') or all(c in '01' for c in input_str):
@@ -532,12 +573,26 @@ class WiegandTransformer:
         
         # Sort: valid parity first, then by warning count
         results.sort(key=lambda x: (
+            x.source_format != "PERCo" if bare_perco else False,
             not x.parity_valid,
             len(x.validation_result.warnings) if x.validation_result else 0,
             len(x.validation_result.errors) if x.validation_result else 0
         ))
         
         return results
+
+    def perco_metadata_for_result(self, input_str: str, bit_format: int) -> Optional[Tuple[int, int, int]]:
+        """Return PERCo metadata when parse_input used PERCo semantics."""
+        explicit_perco = self.try_parse_perco(input_str, allow_bare=False)
+        if explicit_perco:
+            return explicit_perco
+
+        bare_perco = self.try_parse_perco(input_str)
+        if not bare_perco:
+            return None
+
+        _, _, direct_bits = self.parse_input(input_str, bit_format, allow_bare_perco_fallback=False)
+        return bare_perco if direct_bits is None else None
     
     def generate_test_cards(self, count: int, bit_format: int, 
                           vendor: Optional[AccessControlVendor] = None,
@@ -585,6 +640,13 @@ class WiegandTransformer:
             f"Hex         = 0x{result.hex_value}",
             f"Wiegand     = {result.wiegand_bits}"
         ]
+
+        if result.source_format == "PERCo":
+            lines.extend([
+                f"Source      = PERCo",
+                f"PERCo       = {result.perco_value}",
+                f"PERCoPrefix = 0x{result.perco_prefix:02X} ({result.perco_prefix})"
+            ])
         
         # Vendor information
         if result.validation_result and result.validation_result.vendor:
@@ -601,10 +663,12 @@ class WiegandTransformer:
 
     def detect_input_hint(self, input_str: str) -> Optional[str]:
         """Detect special input encodings for user-facing output."""
-        perco = self.try_parse_perco(input_str)
+        explicit_perco = self.try_parse_perco(input_str, allow_bare=False)
+        perco = explicit_perco or self.try_parse_perco(input_str)
         if perco:
             perco_value, prefix, decimal_value = perco
-            return f"[INFO] Input detected as PERCo: value={perco_value}, prefix=0x{prefix:02X} ({prefix}), decimal32={decimal_value}"
+            marker = "detected" if explicit_perco else "can be interpreted"
+            return f"[INFO] Input {marker} as PERCo: value={perco_value}, prefix=0x{prefix:02X} ({prefix}), decimal32={decimal_value}"
         return None
 
 def main():
@@ -700,6 +764,10 @@ def main():
             facility, card, data_bits = transformer.parse_input(args.input, args.format)
             if data_bits is not None:
                 result = transformer.transform_to_decimal(facility, card, data_bits, args.format)
+                perco = transformer.perco_metadata_for_result(args.input, args.format)
+                if perco:
+                    result.source_format = "PERCo"
+                    result.perco_value, result.perco_prefix, _ = perco
                 print(transformer.format_result_for_display(result))
             else:
                 print(f"[ERROR] Cannot Parse Input as {args.format}-bit Format")
