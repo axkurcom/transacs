@@ -61,6 +61,8 @@ class TransformationResult:
     decimal_value: Optional[int] = None
     hex_value: Optional[str] = None
     wiegand_bits: Optional[str] = None
+    full_decimal_value: Optional[int] = None
+    full_hex_value: Optional[str] = None
     perco_value: Optional[int] = None
     perco_prefix: Optional[int] = None
     parity_valid: bool = False
@@ -79,7 +81,7 @@ class WiegandFormatManager:
                              "26-bit - Standard", [AccessControlVendor.HID, AccessControlVendor.GENERIC]),
             34: WiegandConfig(34, 16, 16, (0, 16, 16, 32), 
                              "34-bit - HID", [AccessControlVendor.HID]),
-            37: WiegandConfig(37, 16, 20, (0, 18, 18, 36), 
+            37: WiegandConfig(37, 16, 19, (0, 18, 17, 35), 
                              "37-bit - HID Corporate 1000", [AccessControlVendor.HID]),
             
             33: WiegandConfig(33, 8, 25, None, "35-bit HID w/o parity", [AccessControlVendor.HID]),
@@ -169,6 +171,9 @@ class WiegandTransformer:
         if not cleaned.isdigit():
             return None
 
+        if not tagged and all(c in '01' for c in cleaned):
+            return None
+
         value = int(cleaned)
         min_value = 0 if tagged else self.PERCO_MIN_VALUE
         if not (min_value <= value <= self.PERCO_MAX_VALUE):
@@ -178,24 +183,48 @@ class WiegandTransformer:
         decimal_value = value & 0xFFFFFFFF
         return value, prefix, decimal_value
 
+    def _extract_data_from_full_bits(self, full_bits: str, bit_format: int, config: WiegandConfig) -> Optional[str]:
+        fac_len, card_len = config.fac_len, config.card_len
+        data_len = fac_len + card_len
+
+        if len(full_bits) != bit_format:
+            return None
+
+        if not config.parity_config:
+            return full_bits if len(full_bits) == data_len else None
+
+        data_bits = full_bits[1:-1]
+        return data_bits if len(data_bits) == data_len else None
+
+    def _split_data_bits(self, data_bits: str, config: WiegandConfig) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+        fac_len, card_len = config.fac_len, config.card_len
+        data_len = fac_len + card_len
+
+        if len(data_bits) != data_len:
+            return None, None, None
+
+        facility = int(data_bits[:fac_len], 2)
+        card = int(data_bits[fac_len:], 2)
+        return facility, card, data_bits
+
     def _parse_decimal_value(self, decimal_value: int, bit_format: int, config: WiegandConfig) -> Tuple[Optional[int], Optional[int], Optional[str]]:
         fac_len, card_len = config.fac_len, config.card_len
         data_len = fac_len + card_len
 
-        # Try with full format first (with parity), then data only
-        for target_len in [bit_format, data_len]:
-            data_bits = bin(decimal_value)[2:].zfill(target_len)
-            if len(data_bits) == target_len:
-                if target_len == bit_format and config.parity_config:
-                    # Extract data bits from full Wiegand
-                    start_e, end_e, start_o, end_o = config.parity_config
-                    even_data_length = end_e - start_e
-                    data_bits = data_bits[1:1+even_data_length] + data_bits[1+even_data_length+1:-1]
+        if decimal_value < 0:
+            return None, None, None
 
-                if len(data_bits) == data_len:
-                    facility = int(data_bits[:fac_len], 2)
-                    card = int(data_bits[fac_len:], 2)
-                    return facility, card, data_bits
+        data_bits = bin(decimal_value)[2:]
+        if len(data_bits) <= data_len:
+            return self._split_data_bits(data_bits.zfill(data_len), config)
+
+        if config.parity_config and len(data_bits) <= bit_format:
+            full_bits = data_bits.zfill(bit_format)
+            parity_valid, _ = self.check_parity(full_bits, bit_format)
+            if parity_valid:
+                extracted = self._extract_data_from_full_bits(full_bits, bit_format, config)
+                if extracted is not None:
+                    return self._split_data_bits(extracted, config)
 
         return None, None, None
     
@@ -225,25 +254,22 @@ class WiegandTransformer:
         
         try:
             # Binary input with parity
-            if all(c in '01' for c in input_str):
+            if all(c in '01' for c in input_str) and len(input_str) in {bit_format, data_len}:
                 if len(input_str) == bit_format and config.parity_config:
-                    # Full Wiegand with parity - extract data bits
-                    start_e, end_e, start_o, end_o = config.parity_config
-                    even_data_length = end_e - start_e
-                    odd_data_length = end_o - start_o
-                    data_bits = input_str[1:1+even_data_length] + input_str[1+even_data_length+1:-1]
+                    parity_valid, _ = self.check_parity(input_str, bit_format)
+                    if not parity_valid:
+                        return None, None, None
+                    data_bits = self._extract_data_from_full_bits(input_str, bit_format, config)
                 elif len(input_str) == data_len:
                     # Data bits without parity
                     data_bits = input_str
                 else:
                     return None, None, None
-                    
-                if len(data_bits) != data_len:
+
+                if data_bits is None:
                     return None, None, None
-                    
-                facility = int(data_bits[:fac_len], 2)
-                card = int(data_bits[fac_len:], 2)
-                return facility, card, data_bits
+
+                return self._split_data_bits(data_bits, config)
             
             # Hex input
             if input_str.lower().startswith('0x'):
@@ -252,22 +278,7 @@ class WiegandTransformer:
                     return None, None, None
                 
                 decimal_value = int(hex_value, 16)
-                # Try with full format first (with parity), then data only
-                for target_len in [bit_format, data_len]:
-                    data_bits = bin(decimal_value)[2:].zfill(target_len)
-                    if len(data_bits) == target_len:
-                        if target_len == bit_format and config.parity_config:
-                            # Extract data bits from full Wiegand
-                            start_e, end_e, start_o, end_o = config.parity_config
-                            even_data_length = end_e - start_e
-                            odd_data_length = end_o - start_o
-                            data_bits = data_bits[1:1+even_data_length] + data_bits[1+even_data_length+1:-1]
-                        
-                        if len(data_bits) == data_len:
-                            facility = int(data_bits[:fac_len], 2)
-                            card = int(data_bits[fac_len:], 2)
-                            return facility, card, data_bits
-                return None, None, None
+                return self._parse_decimal_value(decimal_value, bit_format, config)
             
             # Decimal input
             if '/' not in input_str:
@@ -336,8 +347,6 @@ class WiegandTransformer:
             return even_parity + data_bits + odd_parity
         elif bit_format == 34:
             return even_parity + data_bits + odd_parity
-        elif bit_format == 37:
-            return even_parity + data_bits[:18] + odd_parity + data_bits[18:]
         else:
             return even_parity + data_bits + odd_parity
     
@@ -353,18 +362,17 @@ class WiegandTransformer:
         start_e, end_e, start_o, end_o = config.parity_config
         
         try:
+            data_bits = self._extract_data_from_full_bits(wiegand_bits, bit_format, config)
+            if data_bits is None:
+                return False, "[ERROR] Cannot Extract Data Bits"
+
             # Check even parity (usually first bit)
-            even_data_length = end_e - start_e
-            expected_even = self.calculate_parity(wiegand_bits[1:1+even_data_length], 
-                                                0, even_data_length, ParityType.EVEN)
+            expected_even = self.calculate_parity(data_bits, start_e, end_e, ParityType.EVEN)
             if wiegand_bits[0] != expected_even:
                 return False, "Even parity failed"
             
             # Check odd parity (usually last bit)
-            odd_data_start = 1 + even_data_length
-            odd_data_length = end_o - start_o
-            expected_odd = self.calculate_parity(wiegand_bits[odd_data_start:odd_data_start+odd_data_length], 
-                                              0, odd_data_length, ParityType.ODD)
+            expected_odd = self.calculate_parity(data_bits, start_o, end_o, ParityType.ODD)
             if wiegand_bits[-1] != expected_odd:
                 return False, "[ERR] Odd parity failed"
             
@@ -440,8 +448,10 @@ class WiegandTransformer:
         try:
             # Main transformations
             decimal_value = int(data_bits, 2)
-            hex_value = hex(decimal_value)[2:].upper().zfill((bit_format + 3) // 4)
+            hex_value = hex(decimal_value)[2:].upper().zfill((expected_len + 3) // 4)
             wiegand_bits = self.add_parity(data_bits, bit_format)
+            full_decimal_value = int(wiegand_bits, 2)
+            full_hex_value = hex(full_decimal_value)[2:].upper().zfill((bit_format + 3) // 4)
             
             # Check parity
             parity_valid, parity_msg = self.check_parity(wiegand_bits, bit_format)
@@ -458,6 +468,8 @@ class WiegandTransformer:
                 decimal_value=decimal_value,
                 hex_value=hex_value,
                 wiegand_bits=wiegand_bits,
+                full_decimal_value=full_decimal_value,
+                full_hex_value=full_hex_value,
                 parity_valid=parity_valid,
                 validation_result=validation_result
             )
@@ -475,7 +487,7 @@ class WiegandTransformer:
             # Convert input string to bit string
             input_str = input_str.strip()
             
-            if input_str.startswith('0x'):
+            if input_str.lower().startswith('0x'):
                 decimal_value = int(input_str[2:], 16)
                 full_bits = bin(decimal_value)[2:].zfill(bit_format)
             elif all(c in '01' for c in input_str):
@@ -502,12 +514,13 @@ class WiegandTransformer:
             fac_len, card_len = config.fac_len, config.card_len
             
             if config.parity_config:
-                start_e, end_e, start_o, end_o = config.parity_config
-                even_data_length = end_e - start_e
-                odd_data_length = end_o - start_o
-                data_bits = full_bits[1:1+even_data_length] + full_bits[1+even_data_length+1:-1]
+                data_bits = self._extract_data_from_full_bits(full_bits, bit_format, config)
             else:
                 data_bits = full_bits
+
+            if data_bits is None:
+                return TransformationResult(False, input_str,
+                                          error_message="[ERROR] Cannot Extract Data Bits")
             
             if len(data_bits) != fac_len + card_len:
                 return TransformationResult(False, input_str, 
@@ -515,6 +528,8 @@ class WiegandTransformer:
             
             facility = int(data_bits[:fac_len], 2)
             card = int(data_bits[fac_len:], 2)
+            data_decimal = int(data_bits, 2)
+            full_decimal = int(full_bits, 2)
             
             # Validate result
             validation_result = self.validate_card(facility, card, bit_format)
@@ -525,9 +540,11 @@ class WiegandTransformer:
                 format_used=bit_format,
                 facility=facility,
                 card=card,
-                decimal_value=int(full_bits, 2),
-                hex_value=hex(int(full_bits, 2))[2:].upper(),
+                decimal_value=data_decimal,
+                hex_value=hex(data_decimal)[2:].upper().zfill(((fac_len + card_len) + 3) // 4),
                 wiegand_bits=full_bits,
+                full_decimal_value=full_decimal,
+                full_hex_value=hex(full_decimal)[2:].upper().zfill((bit_format + 3) // 4),
                 parity_valid=parity_valid,
                 validation_result=validation_result
             )
@@ -566,7 +583,7 @@ class WiegandTransformer:
                         results.append(result)
             
             # Reverse transformation (for binary/hex inputs)
-            if input_str.startswith('0x') or all(c in '01' for c in input_str):
+            if input_str.lower().startswith('0x'):
                 reverse_result = self.reverse_transform(input_str, bit_format)
                 if reverse_result.success:
                     results.append(reverse_result)
@@ -640,6 +657,12 @@ class WiegandTransformer:
             f"Hex         = 0x{result.hex_value}",
             f"Wiegand     = {result.wiegand_bits}"
         ]
+
+        if result.full_decimal_value is not None:
+            lines.extend([
+                f"WiegandDec  = {result.full_decimal_value}",
+                f"WiegandHex  = 0x{result.full_hex_value}"
+            ])
 
         if result.source_format == "PERCo":
             lines.extend([
@@ -739,10 +762,20 @@ def main():
     
     # Validation
     elif args.validate and args.input and args.format:
+        input_hint = transformer.detect_input_hint(args.input)
+        if input_hint:
+            print(input_hint)
+
         facility, card, data_bits = transformer.parse_input(args.input, args.format)
         if facility is not None:
             validation = transformer.validate_card(facility, card, args.format)
             print(f"Validation for {facility}/{card} - {args.format}-bit:")
+            perco = transformer.perco_metadata_for_result(args.input, args.format)
+            if perco:
+                perco_value, perco_prefix, _ = perco
+                print(f"Source: PERCo")
+                print(f"PERCo: {perco_value}")
+                print(f"PERCo Prefix: 0x{perco_prefix:02X} ({perco_prefix})")
             print(f"Valid: {validation.is_valid}")
             if validation.vendor:
                 print(f"Vendor: {validation.vendor.value}")
