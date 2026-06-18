@@ -694,6 +694,19 @@ class WiegandTransformer:
             return f"[INFO] Input {marker} as PERCo: value={perco_value}, prefix=0x{prefix:02X} ({prefix}), decimal32={decimal_value}"
         return None
 
+def enable_interactive_line_editing() -> None:
+    """Enable common Backspace bindings for interactive input."""
+    try:
+        import readline
+    except ImportError:
+        return
+
+    try:
+        readline.parse_and_bind('"\\C-h": backward-delete-char')
+        readline.parse_and_bind('"\\C-?": backward-delete-char')
+    except Exception:
+        logger.debug("Cannot configure readline key bindings", exc_info=True)
+
 def main():
     """Main CLI function"""
     transformer = WiegandTransformer()
@@ -820,6 +833,7 @@ def main():
     
     # Interactive mode
     else:
+        enable_interactive_line_editing()
         print(" [ TRANSACS 1.0.0.0 ] ")
         print("Advanced Wiegand Card Utility - Interactive Mode")
         print("Supported formats:", ", ".join(map(str, transformer.format_manager.get_supported_formats())))
