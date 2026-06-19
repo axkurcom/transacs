@@ -728,6 +728,22 @@ def main():
     
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
+
+    if args.reverse:
+        if not args.input:
+            print("[ERROR] input Required for Reverse Transformation")
+            return
+        if not args.format:
+            print("[ERROR] '--format' Required for Reverse Transformation")
+            return
+
+    if args.validate:
+        if not args.input:
+            print("[ERROR] input Required for Validation")
+            return
+        if not args.format:
+            print("[ERROR] '--format' Required for Validation")
+            return
     
     # Auto-detect format
     if args.detect and args.input:
