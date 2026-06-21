@@ -707,6 +707,127 @@ def enable_interactive_line_editing() -> None:
     except Exception:
         logger.debug("Cannot configure readline key bindings", exc_info=True)
 
+def format_detect_output(transformer: WiegandTransformer, input_str: str) -> str:
+    lines = []
+    input_hint = transformer.detect_input_hint(input_str)
+    if input_hint:
+        lines.append(input_hint)
+    lines.append("Auto-detecting Format...")
+    results = transformer.auto_detect_format(input_str)
+
+    if results:
+        valid_results = [r for r in results if r.parity_valid and r.validation_result.is_valid]
+        warning_results = [r for r in results if not r.parity_valid or not r.validation_result.is_valid]
+
+        if valid_results:
+            lines.append("Recommended Formats - Valid Parity and Card:")
+            for result in valid_results[:3]:
+                lines.append(f"- {result.format_used}-bit: {result.facility}/{result.card}")
+
+        if warning_results and not valid_results:
+            lines.append("Compatible Formats - with Warn:")
+            for result in warning_results[:3]:
+                status = "parity" if not result.parity_valid else "card"
+                lines.append(f"- {result.format_used}-bit: {result.facility}/{result.card} - {status} issue")
+    else:
+        lines.append("No Compatible Formats Found")
+
+    return "\n".join(lines)
+
+def format_validation_output(transformer: WiegandTransformer, input_str: str, bit_format: int) -> str:
+    lines = []
+    input_hint = transformer.detect_input_hint(input_str)
+    if input_hint:
+        lines.append(input_hint)
+
+    facility, card, data_bits = transformer.parse_input(input_str, bit_format)
+    if facility is not None:
+        validation = transformer.validate_card(facility, card, bit_format)
+        lines.append(f"Validation for {facility}/{card} - {bit_format}-bit:")
+        perco = transformer.perco_metadata_for_result(input_str, bit_format)
+        if perco:
+            perco_value, perco_prefix, _ = perco
+            lines.append("Source: PERCo")
+            lines.append(f"PERCo: {perco_value}")
+            lines.append(f"PERCo Prefix: 0x{perco_prefix:02X} ({perco_prefix})")
+        lines.append(f"Valid: {validation.is_valid}")
+        if validation.vendor:
+            lines.append(f"Vendor: {validation.vendor.value}")
+        if validation.warnings:
+            lines.append(f"Warn: {', '.join(validation.warnings)}")
+        if validation.errors:
+            lines.append(f"Error: {', '.join(validation.errors)}")
+    else:
+        lines.append("Cannot Parse Input for Validation")
+
+    return "\n".join(lines)
+
+def format_transformation_output(
+    transformer: WiegandTransformer,
+    input_str: str,
+    bit_format: Optional[int],
+    verbose: bool = False,
+) -> str:
+    lines = []
+    input_hint = transformer.detect_input_hint(input_str)
+    if input_hint:
+        lines.append(input_hint)
+
+    if bit_format:
+        facility, card, data_bits = transformer.parse_input(input_str, bit_format)
+        if data_bits is not None:
+            result = transformer.transform_to_decimal(facility, card, data_bits, bit_format)
+            perco = transformer.perco_metadata_for_result(input_str, bit_format)
+            if perco:
+                result.source_format = "PERCo"
+                result.perco_value, result.perco_prefix, _ = perco
+            lines.append(transformer.format_result_for_display(result))
+        else:
+            lines.append(f"[ERROR] Cannot Parse Input as {bit_format}-bit Format")
+    else:
+        results = transformer.auto_detect_format(input_str)
+        if results:
+            best_result = results[0]
+            lines.append(transformer.format_result_for_display(best_result))
+
+            if len(results) > 1 and verbose:
+                lines.append(f"\nOther Compatible Formats - {len(results)-1}:")
+                for result in results[1:3]:
+                    lines.append(f"- {result.format_used}-bit: {result.facility}/{result.card}")
+        else:
+            lines.append("[ERROR] Cannot Parse Input with any Supported Format")
+
+    return "\n".join(lines)
+
+def format_cli_input_output(transformer: WiegandTransformer, args: argparse.Namespace, input_str: str) -> str:
+    if args.detect:
+        return format_detect_output(transformer, input_str)
+    if args.reverse:
+        result = transformer.reverse_transform(input_str, args.format)
+        return transformer.format_result_for_display(result)
+    if args.validate:
+        return format_validation_output(transformer, input_str, args.format)
+    return format_transformation_output(transformer, input_str, args.format, args.verbose)
+
+def format_batch_output(transformer: WiegandTransformer, args: argparse.Namespace) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        with open(args.input, "r", encoding="utf-8") as batch_file:
+            entries = []
+            for line_number, raw_line in enumerate(batch_file, 1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                output = format_cli_input_output(transformer, args, line)
+                entries.append(f"Input {line_number}: {line}\n{output}")
+    except OSError as e:
+        return None, f"[ERROR] Cannot Read Batch Input: {e}"
+
+    if not entries:
+        return None, "[ERROR] No Input Lines Found"
+
+    return "\n\n".join(entries), None
+
 def main():
     """Main CLI function"""
     transformer = WiegandTransformer()
@@ -744,31 +865,35 @@ def main():
         if not args.format:
             print("[ERROR] '--format' Required for Validation")
             return
+
+    if args.batch:
+        if not args.input:
+            print("[ERROR] input File Required for Batch Processing")
+            return
+        if args.generate > 0:
+            print("[ERROR] '--batch' Cannot Be Used with Generation")
+            return
     
-    # Auto-detect format
-    if args.detect and args.input:
-        input_hint = transformer.detect_input_hint(args.input)
-        if input_hint:
-            print(input_hint)
-        print("Auto-detecting Format...")
-        results = transformer.auto_detect_format(args.input)
-        
-        if results:
-            valid_results = [r for r in results if r.parity_valid and r.validation_result.is_valid]
-            warning_results = [r for r in results if not r.parity_valid or not r.validation_result.is_valid]
-            
-            if valid_results:
-                print("Recommended Formats - Valid Parity and Card:")
-                for result in valid_results[:3]:  # Show top 3
-                    print(f"- {result.format_used}-bit: {result.facility}/{result.card}")
-            
-            if warning_results and not valid_results:
-                print("Compatible Formats - with Warn:")
-                for result in warning_results[:3]:
-                    status = "parity" if not result.parity_valid else "card"
-                    print(f"- {result.format_used}-bit: {result.facility}/{result.card} - {status} issue")
+    # Batch processing
+    if args.batch:
+        batch_output, batch_error = format_batch_output(transformer, args)
+        if batch_error:
+            print(batch_error)
+            return
+
+        if args.output:
+            try:
+                with open(args.output, "w", encoding="utf-8") as output_file:
+                    output_file.write(batch_output)
+                    output_file.write("\n")
+            except OSError as e:
+                print(f"[ERROR] Cannot Write Batch Output: {e}")
         else:
-            print("No Compatible Formats Found")
+            print(batch_output)
+
+    # Auto-detect format
+    elif args.detect and args.input:
+        print(format_detect_output(transformer, args.input))
     
     # Generate cards
     elif args.generate > 0:
@@ -786,66 +911,15 @@ def main():
     
     # Reverse transformation
     elif args.reverse and args.input and args.format:
-        result = transformer.reverse_transform(args.input, args.format)
-        print(transformer.format_result_for_display(result))
+        print(format_cli_input_output(transformer, args, args.input))
     
     # Validation
     elif args.validate and args.input and args.format:
-        input_hint = transformer.detect_input_hint(args.input)
-        if input_hint:
-            print(input_hint)
-
-        facility, card, data_bits = transformer.parse_input(args.input, args.format)
-        if facility is not None:
-            validation = transformer.validate_card(facility, card, args.format)
-            print(f"Validation for {facility}/{card} - {args.format}-bit:")
-            perco = transformer.perco_metadata_for_result(args.input, args.format)
-            if perco:
-                perco_value, perco_prefix, _ = perco
-                print(f"Source: PERCo")
-                print(f"PERCo: {perco_value}")
-                print(f"PERCo Prefix: 0x{perco_prefix:02X} ({perco_prefix})")
-            print(f"Valid: {validation.is_valid}")
-            if validation.vendor:
-                print(f"Vendor: {validation.vendor.value}")
-            if validation.warnings:
-                print(f"Warn: {', '.join(validation.warnings)}")
-            if validation.errors:
-                print(f"Error: {', '.join(validation.errors)}")
-        else:
-            print("Cannot Parse Input for Validation")
+        print(format_cli_input_output(transformer, args, args.input))
     
     # Normal transformation
     elif args.input:
-        input_hint = transformer.detect_input_hint(args.input)
-        if input_hint:
-            print(input_hint)
-
-        if args.format:
-            # Specific format
-            facility, card, data_bits = transformer.parse_input(args.input, args.format)
-            if data_bits is not None:
-                result = transformer.transform_to_decimal(facility, card, data_bits, args.format)
-                perco = transformer.perco_metadata_for_result(args.input, args.format)
-                if perco:
-                    result.source_format = "PERCo"
-                    result.perco_value, result.perco_prefix, _ = perco
-                print(transformer.format_result_for_display(result))
-            else:
-                print(f"[ERROR] Cannot Parse Input as {args.format}-bit Format")
-        else:
-            # Auto-detect
-            results = transformer.auto_detect_format(args.input)
-            if results:
-                best_result = results[0]
-                print(transformer.format_result_for_display(best_result))
-                
-                if len(results) > 1 and args.verbose:
-                    print(f"\nOther Compatible Formats - {len(results)-1}:")
-                    for result in results[1:3]:  # Show 2 more options
-                        print(f"- {result.format_used}-bit: {result.facility}/{result.card}")
-            else:
-                print("[ERROR] Cannot Parse Input with any Supported Format")
+        print(format_cli_input_output(transformer, args, args.input))
     
     # Interactive mode
     else:
