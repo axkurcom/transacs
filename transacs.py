@@ -819,7 +819,7 @@ def format_batch_output(transformer: WiegandTransformer, args: argparse.Namespac
                     continue
 
                 output = format_cli_input_output(transformer, args, line)
-                entries.append(f"Input {line_number}: {line}\n{output}")
+                entries.append(f"Line {line_number}: {line}\n{output}")
     except OSError as e:
         return None, f"[ERROR] Cannot Read Batch Input: {e}"
 
