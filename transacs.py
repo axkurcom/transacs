@@ -555,8 +555,22 @@ class WiegandTransformer:
     def auto_detect_format(self, input_str: str) -> List[TransformationResult]:
         """Auto-detect format from input"""
         results = []
+        seen_results = set()
         explicit_perco = self.try_parse_perco(input_str, allow_bare=False)
         bare_perco = self.try_parse_perco(input_str)
+
+        def add_unique_result(result: TransformationResult) -> None:
+            key = (
+                result.source_format,
+                result.format_used,
+                result.facility,
+                result.card,
+                result.wiegand_bits,
+            )
+            if key in seen_results:
+                return
+            seen_results.add(key)
+            results.append(result)
         
         for bit_format in self.format_manager.get_supported_formats():
             # Direct transformation
@@ -567,7 +581,7 @@ class WiegandTransformer:
                     if explicit_perco:
                         result.source_format = "PERCo"
                         result.perco_value, result.perco_prefix, _ = explicit_perco
-                    results.append(result)
+                    add_unique_result(result)
 
             # Bare PERCo is ambiguous with long decimal Wiegand values, so keep it
             # as a separate auto-detect candidate instead of changing decimal parsing.
@@ -580,13 +594,15 @@ class WiegandTransformer:
                         result.source_format = "PERCo"
                         result.perco_value = perco_value
                         result.perco_prefix = perco_prefix
-                        results.append(result)
+                        add_unique_result(result)
             
-            # Reverse transformation (for binary/hex inputs)
+            # Hex input can mean either a data value or a full Wiegand stream.
+            # Keep both interpretations when they differ, but suppress exact
+            # duplicates for formats without parity.
             if input_str.lower().startswith('0x'):
                 reverse_result = self.reverse_transform(input_str, bit_format)
                 if reverse_result.success:
-                    results.append(reverse_result)
+                    add_unique_result(reverse_result)
         
         # Sort: valid parity first, then by warning count
         results.sort(key=lambda x: (
