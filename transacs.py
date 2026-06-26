@@ -626,6 +626,20 @@ class WiegandTransformer:
 
         _, _, direct_bits = self.parse_input(input_str, bit_format, allow_bare_perco_fallback=False)
         return bare_perco if direct_bits is None else None
+
+    def validate_generation_facility(self, bit_format: int, facility: Optional[int]) -> Optional[str]:
+        if facility is None:
+            return None
+
+        config = self.format_manager.get_format(bit_format)
+        if not config:
+            return "Invalid Format"
+
+        max_fac = (1 << config.fac_len) - 1
+        if not (0 <= facility <= max_fac):
+            return f"Facility {facility} Out of Range for {bit_format}-bit Format: 0-{max_fac}"
+
+        return None
     
     def generate_test_cards(self, count: int, bit_format: int, 
                           vendor: Optional[AccessControlVendor] = None,
@@ -634,6 +648,10 @@ class WiegandTransformer:
         config = self.format_manager.get_format(bit_format)
         if not config:
             return []
+
+        facility_error = self.validate_generation_facility(bit_format, facility)
+        if facility_error:
+            return [TransformationResult(False, "", error_message=facility_error)]
         
         results = []
         fac_len, card_len = config.fac_len, config.card_len
@@ -915,6 +933,11 @@ def main():
     elif args.generate > 0:
         if not args.format:
             print("[ERROR] '--format' Required for Generation")
+            return
+
+        facility_error = transformer.validate_generation_facility(args.format, args.facility)
+        if facility_error:
+            print(f"[ERROR] {facility_error}")
             return
         
         vendor = AccessControlVendor(args.vendor) if args.vendor else None
