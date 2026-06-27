@@ -8,13 +8,15 @@ import random
 import csv
 import argparse
 import logging
-from typing import Optional, Tuple, List, Dict, Any, Set
+from typing import Optional, Tuple, List, Dict, Any, Set, Union
 from dataclasses import dataclass
 from enum import Enum
 
 # Logging setup
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+CardPattern = Union[Tuple[int, int], Tuple[Tuple[int, int], Tuple[int, int]]]
 
 class ParityType(Enum):
     EVEN = "even"
@@ -96,18 +98,18 @@ class WiegandFormatManager:
             64: WiegandConfig(64, 32, 32, None, "64-bit - Indala", [AccessControlVendor.INDALA]),
         }
     
-    def _initialize_card_knowledge_base(self) -> Dict[Tuple[int, int], Dict]:
+    def _initialize_card_knowledge_base(self) -> Dict[CardPattern, Dict]:
         """Card knowledge base with verified data"""
         return {
             # HID specific patterns
-            (0, 1000): {"vendor": AccessControlVendor.HID, "note": "HID Test Card Range"},
+            ((0, 0), (1000, 1001)): {"vendor": AccessControlVendor.HID, "note": "HID Test Card Range"},
             (0, 1001): {"vendor": AccessControlVendor.HID, "note": "HID Test Card"},
-            (0, 65535): {"vendor": AccessControlVendor.HID, "note": "HID Max Facility"},
+            (0, 65535): {"vendor": AccessControlVendor.HID, "note": "HID Max Card Number"},
             (1, 100): {"vendor": AccessControlVendor.HID, "note": "Common HID Facility 1"},
             
             # Indala patterns
-            (0, 50000): {"vendor": AccessControlVendor.INDALA, "note": "Indala Common Range"},
-            (1000, 2000): {"vendor": AccessControlVendor.INDALA, "note": "Indala Facility 1000 Range"},
+            (0, 50000): {"vendor": AccessControlVendor.INDALA, "note": "Indala Common Card"},
+            (1000, 2000): {"vendor": AccessControlVendor.INDALA, "note": "Indala Facility 1000 Card"},
             
             # General access control patterns
             (0, 0): {"vendor": AccessControlVendor.GENERIC, "note": "System/Reserved Card"},
@@ -139,7 +141,7 @@ class WiegandFormatManager:
         if key in self.card_knowledge_base:
             return self.card_knowledge_base[key]
         
-        # Range matching for facility
+        # Range matching
         for (fac_range, card_range), info in self.card_knowledge_base.items():
             if isinstance(fac_range, tuple) and isinstance(card_range, tuple):
                 if fac_range[0] <= facility <= fac_range[1] and card_range[0] <= card <= card_range[1]:
