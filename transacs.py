@@ -86,8 +86,8 @@ class WiegandFormatManager:
             37: WiegandConfig(37, 16, 19, (0, 18, 17, 35), 
                              "37-bit - HID Corporate 1000", [AccessControlVendor.HID]),
             
-            33: WiegandConfig(33, 8, 25, None, "35-bit HID w/o parity", [AccessControlVendor.HID]),
-            35: WiegandConfig(35, 12, 23, None, "35-bit - HID w/ parity", [AccessControlVendor.HID]),
+            33: WiegandConfig(33, 8, 25, None, "33-bit - HID without parity", [AccessControlVendor.HID]),
+            35: WiegandConfig(35, 12, 23, None, "35-bit - HID without parity", [AccessControlVendor.HID]),
             36: WiegandConfig(36, 4, 32, None, "36-bit", [AccessControlVendor.GENERIC]),
             
             40: WiegandConfig(40, 16, 24, None, "40-bit", [AccessControlVendor.GENERIC]),

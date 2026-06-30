@@ -16,9 +16,9 @@ python3 transacs.py
 |------|----------------------------------------|---------------|-----------|---------------------------|----------------------------------|
 | 26   | Standard 26-bit (H10301)               | 8             | 16        | Even(0), Odd(25)          | HID, Generic                     |
 | 34   | HID 34-bit                             | 16            | 16        | Even(0), Odd(33)          | HID                              |
-| 37   | HID Corporate 1000 (H10304)            | 16            | 20        | Even(0), Odd(36)          | HID                              |
-| 33   | 35-bit HID without parity              | 8             | 25        | None                      | HID                              |
-| 35   | 35-bit HID with parity                 | 12            | 23        | None (custom)             | HID                              |
+| 37   | HID Corporate 1000 (H10304)            | 16            | 19        | Even(0), Odd(36)          | HID                              |
+| 33   | 33-bit HID-compatible without parity   | 8             | 25        | None                      | HID                              |
+| 35   | 35-bit HID-compatible without parity   | 12            | 23        | None                      | HID                              |
 | 36   | Generic 36-bit                         | 4             | 32        | None                      | Generic                          |
 | 40   | Generic 40-bit                         | 16            | 24        | None                      | Generic                          |
 | 42   | Generic 42-bit                         | 16            | 26        | None                      | Generic                          |
@@ -105,7 +105,7 @@ Run without arguments → drops into REPL with commands:
 
 | Issue                                                                 | Cause                                                                                 | Effect                                                                 |
 |-----------------------------------------------------------------------|---------------------------------------------------------------------------------------|------------------------------------------------------------------------|
-| Incorrect parity calculation on non-standard formats                 | Only 26/34/37 have hard-coded parity positions; others return "No parity"             | Misleading "Valid" for formats without parity                          |
+| No parity validation on no-parity formats                            | Only 26/34/37 have configured parity positions; others are treated as "No parity"     | Vendor-specific/custom parity is not validated                          |
 | Hex input without leading `0x` is treated as decimal                  | No fallback for bare hex strings                                                      | `ABCDEF` → treated as decimal, causes confusion                        |
 | Auto-detection may suggest multiple valid formats                     | Several formats can produce same FC/CN with different bit layouts                    | User must manually verify which format the system actually uses       |
 | No support for PIV, iCLASS, MIFARE DESFire, or other smart card formats | Strictly Wiegand magnetic-stripe style only                                           | Cannot handle modern high-security credentials                        |
