@@ -3,12 +3,10 @@
 ### Transacs - Advanced Wiegand Card Utility ###
 """
 
-import sys
 import random
-import csv
 import argparse
 import logging
-from typing import Optional, Tuple, List, Dict, Any, Set, Union
+from typing import Optional, Tuple, List, Dict, Set, Union
 from dataclasses import dataclass
 from enum import Enum
 
@@ -30,6 +28,16 @@ class AccessControlVendor(Enum):
     KANTECH = "kantech"
     LENEL = "lenel"
     GENERIC = "generic"
+
+def parse_vendor_arg(value: Optional[str]) -> Tuple[Optional[AccessControlVendor], Optional[str]]:
+    if value is None:
+        return None, None
+
+    try:
+        return AccessControlVendor(value.lower()), None
+    except ValueError:
+        supported = ", ".join(v.value for v in AccessControlVendor)
+        return None, f"Unsupported Vendor '{value}'. Supported: {supported}"
 
 @dataclass
 class WiegandConfig:
