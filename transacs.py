@@ -352,13 +352,7 @@ class WiegandTransformer:
         even_parity = self.calculate_parity(data_bits, start_e, end_e, ParityType.EVEN)
         odd_parity = self.calculate_parity(data_bits, start_o, end_o, ParityType.ODD)
         
-        # Build full bit string with parity
-        if bit_format == 26:
-            return even_parity + data_bits + odd_parity
-        elif bit_format == 34:
-            return even_parity + data_bits + odd_parity
-        else:
-            return even_parity + data_bits + odd_parity
+        return even_parity + data_bits + odd_parity
     
     def check_parity(self, wiegand_bits: str, bit_format: int) -> Tuple[bool, str]:
         """Check parity bits correctness"""
@@ -650,6 +644,17 @@ class WiegandTransformer:
             return f"Facility {facility} Out of Range for {bit_format}-bit Format: 0-{max_fac}"
 
         return None
+
+    def validate_generation_vendor(self, bit_format: int, vendor: Optional[AccessControlVendor]) -> Optional[str]:
+        if vendor is None:
+            return None
+
+        vendor_formats = self.format_manager.get_formats_by_vendor(vendor)
+        if any(config.bit_format == bit_format for config in vendor_formats):
+            return None
+
+        supported_formats = ", ".join(str(config.bit_format) for config in vendor_formats) or "none"
+        return f"Vendor '{vendor.value}' Does Not Support {bit_format}-bit Format; supported: {supported_formats}"
     
     def generate_test_cards(self, count: int, bit_format: int, 
                           vendor: Optional[AccessControlVendor] = None,
@@ -662,6 +667,10 @@ class WiegandTransformer:
         facility_error = self.validate_generation_facility(bit_format, facility)
         if facility_error:
             return [TransformationResult(False, "", error_message=facility_error)]
+
+        vendor_error = self.validate_generation_vendor(bit_format, vendor)
+        if vendor_error:
+            return [TransformationResult(False, "", error_message=vendor_error)]
         
         results = []
         fac_len, card_len = config.fac_len, config.card_len
@@ -949,8 +958,17 @@ def main():
         if facility_error:
             print(f"[ERROR] {facility_error}")
             return
+
+        vendor, vendor_parse_error = parse_vendor_arg(args.vendor)
+        if vendor_parse_error:
+            print(f"[ERROR] {vendor_parse_error}")
+            return
+
+        vendor_error = transformer.validate_generation_vendor(args.format, vendor)
+        if vendor_error:
+            print(f"[ERROR] {vendor_error}")
+            return
         
-        vendor = AccessControlVendor(args.vendor) if args.vendor else None
         cards = transformer.generate_test_cards(args.generate, args.format, vendor, args.facility)
         
         print(f"Generated {len(cards)} Test Cards:")
